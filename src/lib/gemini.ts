@@ -13,6 +13,20 @@ function authHeaders() {
   };
 }
 
+async function throwApiError(response: Response, fallback: string): Promise<never> {
+  let message = fallback;
+  try {
+    const payload = await response.json();
+    if (payload?.error) {
+      message = String(payload.error);
+    }
+  } catch {
+    // ignore parse issues and use fallback message
+  }
+
+  throw new Error(message);
+}
+
 export async function analyzeCase(description: string): Promise<CaseAnalysis> {
   const response = await fetch('/api/ai/analyze-case', {
     method: 'POST',
@@ -21,7 +35,7 @@ export async function analyzeCase(description: string): Promise<CaseAnalysis> {
   });
 
   if (!response.ok) {
-    throw new Error('Falha ao analisar caso com IA');
+    await throwApiError(response, 'Falha ao analisar caso com IA');
   }
 
   const payload = await response.json();
@@ -42,7 +56,7 @@ export async function generateSearchString(theme: string): Promise<string> {
   });
 
   if (!response.ok) {
-    throw new Error('Falha ao gerar string de busca');
+    await throwApiError(response, 'Falha ao gerar string de busca');
   }
 
   const payload = await response.json();
@@ -57,7 +71,7 @@ export async function analyzeRuling(rulingText: string): Promise<string> {
   });
 
   if (!response.ok) {
-    throw new Error('Falha ao analisar acordao');
+    await throwApiError(response, 'Falha ao analisar acordao');
   }
 
   const payload = await response.json();
@@ -72,7 +86,7 @@ export async function findSimilarCases(description: string): Promise<string> {
   });
 
   if (!response.ok) {
-    throw new Error('Falha ao buscar precedentes');
+    await throwApiError(response, 'Falha ao buscar precedentes');
   }
 
   const payload = await response.json();

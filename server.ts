@@ -153,17 +153,24 @@ function verifyPassword(password: string, passwordSalt: string, passwordHash: st
 }
 
 function createMathCaptcha() {
-  const left = Math.floor(Math.random() * 8) + 2;
-  const right = Math.floor(Math.random() * 8) + 2;
+  let left = Math.floor(Math.random() * 8) + 2;
+  let right = Math.floor(Math.random() * 8) + 2;
   const operations = ["+", "-"] as const;
   const op = operations[Math.floor(Math.random() * operations.length)];
+
+  if (op === "-" && left < right) {
+    const temp = left;
+    left = right;
+    right = temp;
+  }
+
   const answer = op === "+" ? left + right : left - right;
   const question = `${left} ${op} ${right} = ?`;
   const captchaId = crypto.randomUUID();
 
   captchaStore.set(captchaId, {
     answer: String(answer),
-    expiresAt: Date.now() + 2 * 60 * 1000,
+    expiresAt: Date.now() + 5 * 60 * 1000,
   });
 
   return { captchaId, question };

@@ -299,6 +299,7 @@ function RegularUserDashboard({ user, onLogout }: { user: UserProfile; onLogout:
   const [searchResult, setSearchResult] = useState('');
   const [rulingText, setRulingText] = useState('');
   const [rulingResult, setRulingResult] = useState('');
+  const [aiError, setAiError] = useState<string | null>(null);
 
   const [caseHistory, setCaseHistory] = useState<CaseHistoryRecord[]>([]);
   const [searchHistory, setSearchHistory] = useState<SearchHistoryRecord[]>([]);
@@ -329,6 +330,7 @@ function RegularUserDashboard({ user, onLogout }: { user: UserProfile; onLogout:
   const handleAnalyzeCase = async () => {
     if (!caseDescription) return;
     setLoading(true);
+    setAiError(null);
     try {
       const result = await analyzeCase(caseDescription);
       setCaseResult(result);
@@ -338,6 +340,23 @@ function RegularUserDashboard({ user, onLogout }: { user: UserProfile; onLogout:
         body: JSON.stringify({ userId: user.id, description: caseDescription, ...result }),
       });
       await fetchHistory();
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : 'Falha ao analisar caso.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFindSimilarCases = async () => {
+    if (!caseDescription) return;
+    setLoading(true);
+    setAiError(null);
+
+    try {
+      const result = await findSimilarCases(caseDescription);
+      setPrecedents(result);
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : 'Falha ao buscar precedentes.');
     } finally {
       setLoading(false);
     }
@@ -346,6 +365,7 @@ function RegularUserDashboard({ user, onLogout }: { user: UserProfile; onLogout:
   const handleGenerateSearch = async () => {
     if (!searchTerm) return;
     setLoading(true);
+    setAiError(null);
     try {
       const result = await generateSearchString(searchTerm);
       setSearchResult(result);
@@ -355,6 +375,8 @@ function RegularUserDashboard({ user, onLogout }: { user: UserProfile; onLogout:
         body: JSON.stringify({ userId: user.id, term: searchTerm, result }),
       });
       await fetchHistory();
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : 'Falha ao gerar string de busca.');
     } finally {
       setLoading(false);
     }
@@ -363,6 +385,7 @@ function RegularUserDashboard({ user, onLogout }: { user: UserProfile; onLogout:
   const handleAnalyzeRuling = async () => {
     if (!rulingText) return;
     setLoading(true);
+    setAiError(null);
     try {
       const result = await analyzeRuling(rulingText);
       setRulingResult(result);
@@ -372,6 +395,8 @@ function RegularUserDashboard({ user, onLogout }: { user: UserProfile; onLogout:
         body: JSON.stringify({ userId: user.id, text: rulingText, result }),
       });
       await fetchHistory();
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : 'Falha ao analisar acórdão.');
     } finally {
       setLoading(false);
     }
@@ -404,12 +429,18 @@ function RegularUserDashboard({ user, onLogout }: { user: UserProfile; onLogout:
           <MetricCard label="Acórdãos no banco" value={String(rulingHistory.length)} />
         </div>
 
+        {aiError && (
+          <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
+            {aiError}
+          </div>
+        )}
+
         {activeTab === 'analyst' && (
           <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
             <textarea value={caseDescription} onChange={(e) => setCaseDescription(e.target.value)} className="w-full h-48 p-4 border border-slate-200 rounded-xl text-sm" placeholder="Descreva o caso para análise." />
             <div className="flex gap-2">
               <button onClick={handleAnalyzeCase} disabled={loading || !caseDescription} className="bg-slate-900 text-white px-4 py-2 rounded-lg text-sm font-bold">{loading ? 'Processando...' : 'Analisar Caso'}</button>
-              <button onClick={async () => setPrecedents(await findSimilarCases(caseDescription))} disabled={!caseDescription} className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-bold">Buscar Precedentes</button>
+              <button onClick={handleFindSimilarCases} disabled={loading || !caseDescription} className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-bold">Buscar Precedentes</button>
             </div>
             {caseResult && (
               <div className="space-y-3">
