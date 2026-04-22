@@ -596,21 +596,13 @@ async function startServer() {
   });
 
   app.post("/api/auth/login", async (req, res) => {
-    const { email, password, captchaId, captchaAnswer } = req.body as {
+    const { email, password } = req.body as {
       email?: string;
       password?: string;
-      captchaId?: string;
-      captchaAnswer?: string;
     };
 
-    if (!email || !password || !captchaId || !captchaAnswer) {
-      return res
-        .status(400)
-        .json({ error: "email, password, captchaId and captchaAnswer are required" });
-    }
-
-    if (!verifyMathCaptcha(captchaId, captchaAnswer)) {
-      return res.status(400).json({ error: "Captcha invalido ou expirado" });
+    if (!email || !password) {
+      return res.status(400).json({ error: "email and password are required" });
     }
 
     const normalizedEmail = normalizeEmail(email);

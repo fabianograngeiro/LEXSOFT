@@ -67,7 +67,6 @@ function AppContent() {
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [captchaAnswer, setCaptchaAnswer] = useState('');
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loginLoading, setLoginLoading] = useState(false);
 
@@ -103,21 +102,20 @@ function AppContent() {
   }, []);
 
   const handleEmailLogin = async () => {
-    if (!email || !password || !captchaAnswer) {
-      setLoginError('Preencha email, senha e captcha.');
+    if (!email || !password) {
+      setLoginError('Preencha email e senha.');
       return;
     }
 
     setLoginLoading(true);
     setLoginError(null);
 
-    const result = await login(email, password, captchaAnswer);
+    const result = await login(email, password);
     if (!result.ok) {
       setLoginError(result.error || 'Falha no login');
     } else {
       setEmail('');
       setPassword('');
-      setCaptchaAnswer('');
       await fetchAuthStatus();
     }
 
@@ -251,23 +249,12 @@ function AppContent() {
         >
           <div className="text-center mb-6">
             <h1 className="text-2xl font-bold text-slate-900">Login Seguro</h1>
-            <p className="text-sm text-slate-500 mt-1">Acesso por email, senha e captcha.</p>
+            <p className="text-sm text-slate-500 mt-1">Acesso por email e senha.</p>
           </div>
 
           <div className="space-y-3">
             <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm" />
             <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Senha" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm" />
-
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-[11px] font-bold text-slate-500 uppercase tracking-widest block">Captcha</label>
-                <button type="button" onClick={refreshCaptcha} className="text-[10px] font-bold text-blue-600">Atualizar</button>
-              </div>
-              <div className="bg-slate-100 border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono text-slate-700 mb-2">
-                {captcha?.question || 'Carregando captcha...'}
-              </div>
-              <input value={captchaAnswer} onChange={(e) => setCaptchaAnswer(e.target.value)} placeholder="Resposta do captcha" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-sm" />
-            </div>
 
             {loginError && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{loginError}</p>}
 

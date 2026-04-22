@@ -76,11 +76,11 @@ Quick health check:
 curl http://localhost:3000/api/health
 ```
 
-## Login real (email/senha + captcha)
+## Login real (email/senha)
 
 - Login is performed by backend with email/password.
-- A math captcha challenge is required in each login attempt.
 - If no `superadmin` exists, the app opens an initial setup screen to create one.
+- The initial superadmin setup still uses math captcha for first-time security.
 - Superadmin has an exclusive dashboard with only:
    - User management
    - Settings

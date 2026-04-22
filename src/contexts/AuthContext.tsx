@@ -19,7 +19,7 @@ interface AuthContextType {
   loading: boolean;
   captcha: { captchaId: string; question: string } | null;
   refreshCaptcha: () => Promise<void>;
-  login: (email: string, password: string, captchaAnswer: string) => Promise<{ ok: boolean; error?: string }>;
+  login: (email: string, password: string) => Promise<{ ok: boolean; error?: string }>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
   isAuthenticated: boolean;
@@ -80,11 +80,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     bootstrap();
   }, []);
 
-  const login = async (email: string, password: string, captchaAnswer: string) => {
-    if (!captcha) {
-      return { ok: false, error: 'Captcha indisponível. Recarregue a página.' };
-    }
-
+  const login = async (email: string, password: string) => {
     try {
       const response = await fetch('/api/auth/login', {
         method: 'POST',
@@ -92,25 +88,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({
           email,
           password,
-          captchaId: captcha.captchaId,
-          captchaAnswer,
         }),
       });
 
       const payload = await response.json();
 
       if (!response.ok) {
-        await refreshCaptcha();
         return { ok: false, error: payload.error || 'Falha no login' };
       }
 
       setUser(payload);
       localStorage.setItem('auth_user_id', payload.id);
-      await refreshCaptcha();
       return { ok: true };
     } catch (error) {
       console.error('Login failed:', error);
-      await refreshCaptcha();
       return { ok: false, error: 'Erro de conexão ao autenticar' };
     }
   };
