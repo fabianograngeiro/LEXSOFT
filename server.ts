@@ -15,6 +15,7 @@ type UserRole = "superadmin" | "admin" | "defensor" | "analista";
 type UserPlan = "trial" | "pro" | "enterprise";
 type UserStatus = "active" | "pending" | "suspended";
 type AiProvider = "gemini" | "groq" | "chatgpt";
+type BackendLogLevel = "info" | "warn" | "error";
 
 interface UserRecord {
   id: string;
@@ -83,6 +84,15 @@ interface CheckboxCaptchaTask {
   expected: boolean;
 }
 
+interface BackendLogEntry {
+  id: number;
+  timestamp: string;
+  level: BackendLogLevel;
+  source: string;
+  message: string;
+  meta?: Record<string, unknown>;
+}
+
 const initialDB: JsonDB = {
   users: [],
   cases: [],
@@ -108,6 +118,42 @@ const resetChallengeStore = new Map<
   string,
   { tasks: CheckboxCaptchaTask[]; expiresAt: number }
 >();
+const backendLogs: BackendLogEntry[] = [];
+const MAX_BACKEND_LOGS = 500;
+let backendLogCounter = 1;
+
+function pushBackendLog(
+  level: BackendLogLevel,
+  source: string,
+  message: string,
+  meta?: Record<string, unknown>
+) {
+  const entry: BackendLogEntry = {
+    id: backendLogCounter++,
+    timestamp: nowIso(),
+    level,
+    source,
+    message,
+    ...(meta ? { meta } : {}),
+  };
+
+  backendLogs.push(entry);
+  if (backendLogs.length > MAX_BACKEND_LOGS) {
+    backendLogs.splice(0, backendLogs.length - MAX_BACKEND_LOGS);
+  }
+
+  return entry;
+}
+
+function listBackendLogs(limit = 100, afterId?: number) {
+  const normalizedLimit = Math.max(1, Math.min(500, limit));
+  const filtered =
+    typeof afterId === "number" && Number.isFinite(afterId)
+      ? backendLogs.filter((entry) => entry.id > afterId)
+      : backendLogs;
+
+  return filtered.slice(-normalizedLimit);
+}
 
 function nowIso() {
   return new Date().toISOString();
@@ -451,13 +497,111 @@ function requireActiveUser(req: express.Request, res: express.Response) {
   return actor;
 }
 
+class HttpError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function parseProviderErrorMessage(rawBody: string) {
+  try {
+    const parsed = JSON.parse(rawBody) as { error?: { message?: string } | string };
+    if (typeof parsed.error === "string") {
+      return parsed.error;
+    }
+    if (parsed.error && typeof parsed.error.message === "string") {
+      return parsed.error.message;
+    }
+  } catch {
+    // Ignore parse failures and use compact raw text below.
+  }
+
+  const compact = rawBody.replace(/\s+/g, " ").trim();
+  return compact.length > 180 ? `${compact.slice(0, 180)}...` : compact;
+}
+
+function summarizeAiOutput(text: string) {
+  const compact = (text || "").replace(/\s+/g, " ").trim();
+  if (!compact) {
+    return "(sem conteudo)";
+  }
+  return compact.length > 220 ? `${compact.slice(0, 220)}...` : compact;
+}
+
+function unknownErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  return "Erro desconhecido";
+}
+
+function parseJsonObjectFromModelText(text: string) {
+  const clean = (text || "").trim();
+  if (!clean) {
+    return null;
+  }
+
+  const candidates = [clean];
+  const fenced = clean.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+  if (fenced?.[1]) {
+    candidates.push(fenced[1].trim());
+  }
+
+  const firstBrace = clean.indexOf("{");
+  const lastBrace = clean.lastIndexOf("}");
+  if (firstBrace >= 0 && lastBrace > firstBrace) {
+    candidates.push(clean.slice(firstBrace, lastBrace + 1));
+  }
+
+  for (const value of candidates) {
+    try {
+      const parsed = JSON.parse(value) as Record<string, unknown>;
+      if (parsed && typeof parsed === "object") {
+        return parsed;
+      }
+    } catch {
+      // Continue trying the next candidate.
+    }
+  }
+
+  return null;
+}
+
+function sendAiError(
+  res: express.Response,
+  context: string,
+  error: unknown,
+  fallbackMessage: string,
+  meta?: Record<string, unknown>
+) {
+  console.error(`${context}:`, error);
+
+  const aiMessage = unknownErrorMessage(error);
+  pushBackendLog("error", "ai", context, {
+    aiMessage,
+    ...(meta || {}),
+  });
+
+  if (error instanceof HttpError) {
+    return res.status(error.status).json({ error: error.message, aiMessage });
+  }
+
+  return res.status(500).json({ error: fallbackMessage, aiMessage });
+}
+
 async function callAiProvider(prompt: string, responseAsJson = false) {
   const provider = db.aiConfig.provider;
   const model = db.aiConfig.model || defaultModelForProvider(provider);
   const apiKey = db.aiConfig.apiKey;
 
   if (!apiKey) {
-    throw new Error("AI provider not configured. Set API key in superadmin settings.");
+    throw new HttpError(
+      400,
+      "Chave global de IA nao configurada. Defina em Configuracoes do superadmin."
+    );
   }
 
   if (provider === "gemini") {
@@ -478,14 +622,19 @@ async function callAiProvider(prompt: string, responseAsJson = false) {
 
     if (!response.ok) {
       const body = await response.text();
-      throw new Error(`Gemini error: ${response.status} ${body}`);
+      const providerMessage = parseProviderErrorMessage(body);
+      throw new HttpError(
+        502,
+        `Falha no provedor Gemini (${response.status}). ${providerMessage}`
+      );
     }
 
     const payload = (await response.json()) as {
       candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
     };
 
-    return payload.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const modelText = payload.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    return modelText;
   }
 
   const isGroq = provider === "groq";
@@ -509,14 +658,20 @@ async function callAiProvider(prompt: string, responseAsJson = false) {
 
   if (!response.ok) {
     const body = await response.text();
-    throw new Error(`${provider} error: ${response.status} ${body}`);
+    const providerName = provider === "chatgpt" ? "ChatGPT" : "Groq";
+    const providerMessage = parseProviderErrorMessage(body);
+    throw new HttpError(
+      502,
+      `Falha no provedor ${providerName} (${response.status}). ${providerMessage}`
+    );
   }
 
   const payload = (await response.json()) as {
     choices?: Array<{ message?: { content?: string } }>;
   };
 
-  return payload.choices?.[0]?.message?.content || "";
+  const modelText = payload.choices?.[0]?.message?.content || "";
+  return modelText;
 }
 
 async function resetDatabaseToFactory() {
@@ -531,6 +686,31 @@ async function startServer() {
 
   const app = express();
   app.use(express.json());
+
+  app.use((req, res, next) => {
+    if (!req.path.startsWith("/api")) {
+      next();
+      return;
+    }
+
+    const start = Date.now();
+    res.on("finish", () => {
+      if (req.path === "/api/superadmin/logs") {
+        return;
+      }
+
+      if (res.statusCode >= 500) {
+        pushBackendLog("error", "http", `HTTP ${res.statusCode} ${req.method} ${req.path}`, {
+          method: req.method,
+          path: req.path,
+          statusCode: res.statusCode,
+          durationMs: Date.now() - start,
+        });
+      }
+    });
+
+    next();
+  });
 
   app.get("/api/auth/status", async (_req, res) => {
     return res.json({ hasSuperAdmin: hasSuperAdmin() });
@@ -847,6 +1027,27 @@ async function startServer() {
     });
   });
 
+  app.get("/api/superadmin/logs", async (req, res) => {
+    const actor = requireSuperAdmin(req, res);
+    if (!actor) {
+      return;
+    }
+
+    const limitRaw = Number(req.query.limit ?? 100);
+    const afterIdRaw = Number(req.query.afterId);
+
+    const logs = listBackendLogs(
+      Number.isFinite(limitRaw) ? limitRaw : 100,
+      Number.isFinite(afterIdRaw) ? afterIdRaw : undefined
+    );
+
+    return res.json({
+      logs,
+      nextAfterId: logs.length ? logs[logs.length - 1].id : null,
+      totalBuffered: backendLogs.length,
+    });
+  });
+
   app.post("/api/ai/analyze-case", async (req, res) => {
     const actor = requireActiveUser(req, res);
     if (!actor) {
@@ -870,17 +1071,59 @@ Caso: ${description}
 `;
 
     try {
+      pushBackendLog("info", "ai", "Solicitacao de analise de caso iniciada", {
+        route: "/api/ai/analyze-case",
+        userId: actor.id,
+        provider: db.aiConfig.provider,
+        model: db.aiConfig.model || defaultModelForProvider(db.aiConfig.provider),
+      });
+
       const text = await callAiProvider(prompt, true);
-      const parsed = JSON.parse(text || "{}");
+      const parsed = parseJsonObjectFromModelText(text);
+
+      if (!parsed) {
+        const fallbackText = (text || "").trim();
+        pushBackendLog("warn", "ai", "Resposta de IA sem JSON estruturado em analise de caso", {
+          route: "/api/ai/analyze-case",
+          userId: actor.id,
+          aiMessage: summarizeAiOutput(text),
+        });
+
+        return res.json({
+          diagnostico: fallbackText || "Analise gerada pela IA sem JSON estruturado.",
+          estrategiaBusca: "",
+          sugestaoAutomacao: "",
+          minutaPeca: fallbackText || "",
+        });
+      }
+
+      pushBackendLog("info", "ai", "Analise de caso concluida", {
+        route: "/api/ai/analyze-case",
+        userId: actor.id,
+        aiMessage: summarizeAiOutput(text),
+      });
+
       return res.json({
-        diagnostico: parsed.diagnostico || "",
-        estrategiaBusca: parsed.estrategiaBusca || "",
-        sugestaoAutomacao: parsed.sugestaoAutomacao || "",
-        minutaPeca: parsed.minutaPeca || "",
+        diagnostico:
+          typeof parsed.diagnostico === "string" ? parsed.diagnostico : "",
+        estrategiaBusca:
+          typeof parsed.estrategiaBusca === "string" ? parsed.estrategiaBusca : "",
+        sugestaoAutomacao:
+          typeof parsed.sugestaoAutomacao === "string" ? parsed.sugestaoAutomacao : "",
+        minutaPeca:
+          typeof parsed.minutaPeca === "string" ? parsed.minutaPeca : "",
       });
     } catch (error) {
-      console.error("AI analyze-case failed:", error);
-      return res.status(500).json({ error: "Falha ao processar IA para caso" });
+      return sendAiError(
+        res,
+        "AI analyze-case failed",
+        error,
+        "Falha ao processar IA para caso",
+        {
+          route: "/api/ai/analyze-case",
+          userId: actor.id,
+        }
+      );
     }
   });
 
@@ -898,11 +1141,31 @@ Caso: ${description}
     const prompt = `Gere uma string de busca booleana para STJ/TJ sobre: ${theme}. Retorne apenas a string.`;
 
     try {
+      pushBackendLog("info", "ai", "Solicitacao de geracao de busca iniciada", {
+        route: "/api/ai/generate-search",
+        userId: actor.id,
+        provider: db.aiConfig.provider,
+        model: db.aiConfig.model || defaultModelForProvider(db.aiConfig.provider),
+      });
+
       const text = await callAiProvider(prompt);
+      pushBackendLog("info", "ai", "Geracao de busca concluida", {
+        route: "/api/ai/generate-search",
+        userId: actor.id,
+        aiMessage: summarizeAiOutput(text),
+      });
       return res.json({ result: text || "" });
     } catch (error) {
-      console.error("AI generate-search failed:", error);
-      return res.status(500).json({ error: "Falha ao gerar string de busca" });
+      return sendAiError(
+        res,
+        "AI generate-search failed",
+        error,
+        "Falha ao gerar string de busca",
+        {
+          route: "/api/ai/generate-search",
+          userId: actor.id,
+        }
+      );
     }
   });
 
@@ -920,11 +1183,31 @@ Caso: ${description}
     const prompt = `Analise este acordao e responda em markdown:\n1. Resumo dos argumentos vencedores.\n2. Se contraria decisoes recentes do STF.\n3. Se cabe overruling ou distinguishing.\n\nTexto: ${rulingText}`;
 
     try {
+      pushBackendLog("info", "ai", "Solicitacao de analise de acordao iniciada", {
+        route: "/api/ai/analyze-ruling",
+        userId: actor.id,
+        provider: db.aiConfig.provider,
+        model: db.aiConfig.model || defaultModelForProvider(db.aiConfig.provider),
+      });
+
       const text = await callAiProvider(prompt);
+      pushBackendLog("info", "ai", "Analise de acordao concluida", {
+        route: "/api/ai/analyze-ruling",
+        userId: actor.id,
+        aiMessage: summarizeAiOutput(text),
+      });
       return res.json({ result: text || "" });
     } catch (error) {
-      console.error("AI analyze-ruling failed:", error);
-      return res.status(500).json({ error: "Falha ao analisar acordao" });
+      return sendAiError(
+        res,
+        "AI analyze-ruling failed",
+        error,
+        "Falha ao analisar acordao",
+        {
+          route: "/api/ai/analyze-ruling",
+          userId: actor.id,
+        }
+      );
     }
   });
 
@@ -942,11 +1225,31 @@ Caso: ${description}
     const prompt = `Com base nesta descricao, retorne em markdown 3 precedentes possiveis similares (STF/STJ), com numero processual, tribunal, relator e tese: ${description}`;
 
     try {
+      pushBackendLog("info", "ai", "Solicitacao de busca de precedentes iniciada", {
+        route: "/api/ai/find-similar-cases",
+        userId: actor.id,
+        provider: db.aiConfig.provider,
+        model: db.aiConfig.model || defaultModelForProvider(db.aiConfig.provider),
+      });
+
       const text = await callAiProvider(prompt);
+      pushBackendLog("info", "ai", "Busca de precedentes concluida", {
+        route: "/api/ai/find-similar-cases",
+        userId: actor.id,
+        aiMessage: summarizeAiOutput(text),
+      });
       return res.json({ result: text || "" });
     } catch (error) {
-      console.error("AI similar-cases failed:", error);
-      return res.status(500).json({ error: "Falha ao buscar precedentes" });
+      return sendAiError(
+        res,
+        "AI similar-cases failed",
+        error,
+        "Falha ao buscar precedentes",
+        {
+          route: "/api/ai/find-similar-cases",
+          userId: actor.id,
+        }
+      );
     }
   });
 

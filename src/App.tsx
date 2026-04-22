@@ -53,10 +53,25 @@ interface ResetChallenge {
   tasks: Array<{ id: string; label: string }>;
 }
 
+interface BackendLogEntry {
+  id: number;
+  timestamp: string;
+  level: 'info' | 'warn' | 'error';
+  source: string;
+  message: string;
+  meta?: Record<string, unknown>;
+}
+
 function formatDate(dateIso?: string) {
   if (!dateIso) return '---';
   const date = new Date(dateIso);
   return Number.isNaN(date.getTime()) ? '---' : date.toLocaleDateString('pt-BR');
+}
+
+function formatDateTime(dateIso?: string) {
+  if (!dateIso) return '---';
+  const date = new Date(dateIso);
+  return Number.isNaN(date.getTime()) ? '---' : date.toLocaleString('pt-BR');
 }
 
 function AppContent() {
@@ -496,6 +511,10 @@ function SuperAdminDashboard({ user, onLogout }: { user: UserProfile; onLogout: 
   const [aiConfigError, setAiConfigError] = useState<string | null>(null);
   const [savingAiConfig, setSavingAiConfig] = useState(false);
 
+  const [backendLogs, setBackendLogs] = useState<BackendLogEntry[]>([]);
+  const [backendLogsError, setBackendLogsError] = useState<string | null>(null);
+  const [loadingBackendLogs, setLoadingBackendLogs] = useState(false);
+
   const authHeader = useMemo(() => ({ 'x-user-id': user.id, 'Content-Type': 'application/json' }), [user.id]);
 
   const fetchUsers = async () => {
@@ -568,6 +587,51 @@ function SuperAdminDashboard({ user, onLogout }: { user: UserProfile; onLogout: 
 
     setSavingAiConfig(false);
   };
+
+  const fetchBackendLogs = async (initial = false) => {
+    if (initial) {
+      setLoadingBackendLogs(true);
+    }
+
+    try {
+      const response = await fetch('/api/superadmin/logs?limit=180', {
+        headers: { 'x-user-id': user.id },
+      });
+
+      const payload = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        setBackendLogsError(payload?.error || 'Falha ao carregar logs do backend.');
+        return;
+      }
+
+      const incoming = Array.isArray(payload?.logs) ? (payload.logs as BackendLogEntry[]) : [];
+
+      setBackendLogs(incoming);
+
+      setBackendLogsError(null);
+    } catch {
+      setBackendLogsError('Falha de conexão ao carregar logs do backend.');
+    } finally {
+      if (initial) {
+        setLoadingBackendLogs(false);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab !== 'settings') {
+      return;
+    }
+
+    fetchBackendLogs(true);
+
+    const interval = setInterval(() => {
+      fetchBackendLogs(false);
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [activeTab, user.id]);
 
   const saveUser = async () => {
     setUserFormError(null);
@@ -792,6 +856,52 @@ function SuperAdminDashboard({ user, onLogout }: { user: UserProfile; onLogout: 
 
               {aiConfigStatus && <p className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">{aiConfigStatus}</p>}
               {aiConfigError && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{aiConfigError}</p>}
+            </div>
+
+            <div className="border border-slate-200 rounded-lg p-4 space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-bold text-slate-800">Log do backend em tempo real</h3>
+                <button
+                  onClick={() => fetchBackendLogs(true)}
+                  disabled={loadingBackendLogs}
+                  className="bg-slate-900 text-white px-3 py-1.5 rounded text-xs font-bold disabled:opacity-60"
+                >
+                  {loadingBackendLogs ? 'Atualizando...' : 'Atualizar agora'}
+                </button>
+              </div>
+              <p className="text-xs text-slate-500">Atualização automática a cada 2 segundos. Eventos de IA mostram erro e mensagem retornada.</p>
+
+              <div className="max-h-72 overflow-auto rounded-lg border border-slate-200 bg-slate-950 text-slate-100 p-3 space-y-2">
+                {backendLogs.length === 0 && (
+                  <p className="text-xs text-slate-400">Nenhum evento registrado ainda.</p>
+                )}
+
+                {backendLogs.map((entry) => {
+                  const aiMessage = typeof entry.meta?.aiMessage === 'string' ? entry.meta.aiMessage : null;
+                  const levelClass =
+                    entry.level === 'error'
+                      ? 'text-red-300'
+                      : entry.level === 'warn'
+                        ? 'text-amber-300'
+                        : 'text-emerald-300';
+
+                  return (
+                    <div key={entry.id} className="text-xs font-mono border-b border-slate-800 pb-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-slate-400">{formatDateTime(entry.timestamp)}</span>
+                        <span className={levelClass}>[{entry.level.toUpperCase()}]</span>
+                        <span className="text-cyan-300">{entry.source}</span>
+                      </div>
+                      <p className="text-slate-100 whitespace-pre-wrap">{entry.message}</p>
+                      {aiMessage && (
+                        <p className="text-rose-200 whitespace-pre-wrap">Mensagem IA: {aiMessage}</p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {backendLogsError && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{backendLogsError}</p>}
             </div>
 
             <p className="text-sm text-slate-600">Redefinir para padrão de fábrica remove toda a database local.</p>
