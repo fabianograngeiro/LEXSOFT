@@ -1,12 +1,6 @@
 import React, { createContext, useContext, useState, ReactNode, useEffect } from 'react';
-import { 
-  onAuthStateChanged, 
-  User as FirebaseUser, 
-  signOut 
-} from 'firebase/auth';
-import { auth, signInWithGoogle } from '../lib/firebase';
 
-export type UserRole = 'admin' | 'defensor' | 'analista';
+export type UserRole = 'superadmin' | 'admin' | 'defensor' | 'analista';
 
 export interface UserProfile {
   id: string;
@@ -23,8 +17,9 @@ export interface UserProfile {
 interface AuthContextType {
   user: UserProfile | null;
   loading: boolean;
-  login: () => Promise<void>;
-  mockLogin: (role: UserRole) => void;
+  captcha: { captchaId: string; question: string } | null;
+  refreshCaptcha: () => Promise<void>;
+  login: (email: string, password: string, captchaAnswer: string) => Promise<{ ok: boolean; error?: string }>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
   isAuthenticated: boolean;
@@ -35,84 +30,99 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [captcha, setCaptcha] = useState<{ captchaId: string; question: string } | null>(null);
 
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
-      setLoading(true);
-      if (fbUser) {
-        // Sync with backend via Express API
-        const profileData = {
-          id: fbUser.uid,
-          name: fbUser.displayName || 'Usuário Jurídico',
-          email: fbUser.email || '',
-          role: 'defensor',
-          org: 'DP-Geral',
-          plan: 'trial',
-          status: 'active'
-        };
-
-        try {
-          const response = await fetch('/api/users', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(profileData)
-          });
-
-          if (response.ok) {
-            const syncedUser = await response.json();
-            setUser(syncedUser);
-          }
-        } catch (err) {
-          console.error("Backend sync failed:", err);
-        }
-      } else {
-        setUser(null);
-      }
-      setLoading(false);
-    });
-
-    return () => unsubscribe();
-  }, []);
-
-  const login = async () => {
+  const refreshCaptcha = async () => {
     try {
-      await signInWithGoogle();
-    } catch (error) {
-      console.error("Login failed:", error);
+      const response = await fetch('/api/auth/captcha');
+      if (response.ok) {
+        const challenge = await response.json();
+        setCaptcha(challenge);
+      }
+    } catch (err) {
+      console.error('Failed to refresh captcha:', err);
     }
   };
 
-  const mockLogin = (role: UserRole) => {
-    const mockProfiles: Record<UserRole, UserProfile> = {
-      admin: { id: 'mock_admin', name: 'Administrador SaaS', email: 'admin@defensoria.ia', role: 'admin', org: 'Sede Central', plan: 'enterprise', status: 'active', lastActive: new Date().toISOString(), expirationDate: '2026-12-31' },
-      defensor: { id: 'mock_defensor', name: 'Dr. Lucas Defensor', email: 'lucas@defensoria.ia', role: 'defensor', org: 'DP-Geral', plan: 'pro', status: 'active', lastActive: new Date().toISOString(), expirationDate: '2026-06-15' },
-      analista: { id: 'mock_analista', name: 'Analista Juris WP', email: 'analista@defensoria.ia', role: 'analista', org: 'Núcleo Pesquisa', plan: 'trial', status: 'active', lastActive: new Date().toISOString(), expirationDate: '2026-05-21' }
-    };
-    setUser(mockProfiles[role]);
+  const refreshUser = async () => {
+    const userId = localStorage.getItem('auth_user_id');
+    if (!userId) {
+      setUser(null);
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/users/me', {
+        headers: { 'x-user-id': userId }
+      });
+
+      if (!response.ok) {
+        localStorage.removeItem('auth_user_id');
+        setUser(null);
+        return;
+      }
+
+      const syncedUser = await response.json();
+      setUser(syncedUser);
+    } catch (err) {
+      console.error('Refresh failed:', err);
+      setUser(null);
+    }
   };
 
-  const refreshUser = async () => {
-    if (!auth.currentUser) return;
+  useEffect(() => {
+    const bootstrap = async () => {
+      setLoading(true);
+      await Promise.all([refreshUser(), refreshCaptcha()]);
+      setLoading(false);
+    };
+
+    bootstrap();
+  }, []);
+
+  const login = async (email: string, password: string, captchaAnswer: string) => {
+    if (!captcha) {
+      return { ok: false, error: 'Captcha indisponível. Recarregue a página.' };
+    }
+
     try {
-       const response = await fetch('/api/users/me', {
-         headers: { 'x-user-id': auth.currentUser.uid }
-       });
-       if (response.ok) {
-         const syncedUser = await response.json();
-         setUser(syncedUser);
-       }
-    } catch (err) {
-      console.error("Refresh failed:", err);
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          password,
+          captchaId: captcha.captchaId,
+          captchaAnswer,
+        }),
+      });
+
+      const payload = await response.json();
+
+      if (!response.ok) {
+        await refreshCaptcha();
+        return { ok: false, error: payload.error || 'Falha no login' };
+      }
+
+      setUser(payload);
+      localStorage.setItem('auth_user_id', payload.id);
+      await refreshCaptcha();
+      return { ok: true };
+    } catch (error) {
+      console.error('Login failed:', error);
+      await refreshCaptcha();
+      return { ok: false, error: 'Erro de conexão ao autenticar' };
     }
   };
 
   const logout = async () => {
-    await signOut(auth);
+    localStorage.removeItem('auth_user_id');
     setUser(null);
+    await refreshCaptcha();
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, mockLogin, logout, refreshUser, isAuthenticated: !!user }}>
+    <AuthContext.Provider value={{ user, loading, captcha, refreshCaptcha, login, logout, refreshUser, isAuthenticated: !!user }}>
       {children}
     </AuthContext.Provider>
   );
