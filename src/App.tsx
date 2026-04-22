@@ -15,7 +15,7 @@ import {
   Settings,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
-import { analyzeCase, analyzeRuling, CaseAnalysis, findSimilarCases, generateSearchString } from './lib/gemini';
+import { analyzeCase, analyzeRuling, CaseAnalysis, findSimilarCases, generateSearchString } from './lib/ai';
 import { cn } from './lib/utils';
 import { AuthProvider, useAuth, UserProfile } from './contexts/AuthContext';
 

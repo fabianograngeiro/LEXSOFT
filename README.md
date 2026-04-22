@@ -16,10 +16,10 @@ View your app in AI Studio: https://ai.studio/apps/f9b5f9b4-1953-4e26-b189-9f721
 1. Install dependencies:
    `npm install`
 2. Create `.env` (or `.env.local`) and set:
-   - `GEMINI_API_KEY` (required)
    - `DATABASE_URL` (optional for now, reserved for future PostgreSQL use)
    - `SUPERADMIN_EMAIL` (optional bootstrap)
    - `SUPERADMIN_PASSWORD` (optional bootstrap)
+   - AI provider/model/key are managed globally in-app by superadmin (`/api/superadmin/ai-config`)
 3. Run the app:
    `npm run dev`
 4. Open:
