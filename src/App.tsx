@@ -455,6 +455,7 @@ function SuperAdminDashboard({ user, onLogout }: { user: UserProfile; onLogout: 
 
   const [showUserModal, setShowUserModal] = useState(false);
   const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
+  const [userFormError, setUserFormError] = useState<string | null>(null);
   const [userForm, setUserForm] = useState({
     name: '',
     email: '',
@@ -551,6 +552,23 @@ function SuperAdminDashboard({ user, onLogout }: { user: UserProfile; onLogout: 
   };
 
   const saveUser = async () => {
+    setUserFormError(null);
+
+    if (!userForm.name.trim() || !userForm.email.trim()) {
+      setUserFormError('Nome e email são obrigatórios.');
+      return;
+    }
+
+    if (!editingUser && !userForm.password.trim()) {
+      setUserFormError('Senha é obrigatória para criar novo usuário.');
+      return;
+    }
+
+    if (userForm.password && userForm.password.length < 8) {
+      setUserFormError('A senha deve ter no mínimo 8 caracteres.');
+      return;
+    }
+
     const isEdit = Boolean(editingUser);
     const url = isEdit ? `/api/superadmin/users/${editingUser?.id}` : '/api/superadmin/users';
     const method = isEdit ? 'PATCH' : 'POST';
@@ -561,12 +579,18 @@ function SuperAdminDashboard({ user, onLogout }: { user: UserProfile; onLogout: 
       body: JSON.stringify(userForm),
     });
 
-    if (response.ok) {
-      setShowUserModal(false);
-      setEditingUser(null);
-      setUserForm({ name: '', email: '', password: '', role: 'defensor', org: 'DP-Geral', plan: 'trial', status: 'active' });
-      await fetchUsers();
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      setUserFormError(payload?.error || 'Falha ao salvar usuário. Verifique os dados e tente novamente.');
+      return;
     }
+
+    setShowUserModal(false);
+    setEditingUser(null);
+    setUserFormError(null);
+    setUserForm({ name: '', email: '', password: '', role: 'defensor', org: 'DP-Geral', plan: 'trial', status: 'active' });
+    await fetchUsers();
   };
 
   const deleteUser = async (id: string) => {
@@ -655,6 +679,7 @@ function SuperAdminDashboard({ user, onLogout }: { user: UserProfile; onLogout: 
               <button
                 onClick={() => {
                   setEditingUser(null);
+                  setUserFormError(null);
                   setUserForm({ name: '', email: '', password: '', role: 'defensor', org: 'DP-Geral', plan: 'trial', status: 'active' });
                   setShowUserModal(true);
                 }}
@@ -690,6 +715,7 @@ function SuperAdminDashboard({ user, onLogout }: { user: UserProfile; onLogout: 
                           <button
                             onClick={() => {
                               setEditingUser(entry);
+                              setUserFormError(null);
                               setUserForm({
                                 name: entry.name,
                                 email: entry.email,
@@ -791,6 +817,7 @@ function SuperAdminDashboard({ user, onLogout }: { user: UserProfile; onLogout: 
               <input value={userForm.name} onChange={(e) => setUserForm((prev) => ({ ...prev, name: e.target.value }))} placeholder="Nome" className="w-full p-2.5 border border-slate-200 rounded-lg text-sm" />
               <input value={userForm.email} onChange={(e) => setUserForm((prev) => ({ ...prev, email: e.target.value }))} placeholder="Email" className="w-full p-2.5 border border-slate-200 rounded-lg text-sm" />
               <input type="password" value={userForm.password} onChange={(e) => setUserForm((prev) => ({ ...prev, password: e.target.value }))} placeholder={editingUser ? 'Nova senha (opcional)' : 'Senha'} className="w-full p-2.5 border border-slate-200 rounded-lg text-sm" />
+              {userFormError && <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{userFormError}</p>}
               <div className="grid grid-cols-2 gap-2">
                 <select value={userForm.role} onChange={(e) => setUserForm((prev) => ({ ...prev, role: e.target.value as UserProfile['role'] }))} className="w-full p-2.5 border border-slate-200 rounded-lg text-sm">
                   <option value="superadmin">superadmin</option>
