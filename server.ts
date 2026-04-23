@@ -623,6 +623,20 @@ function unknownErrorMessage(error: unknown) {
   return "Erro desconhecido";
 }
 
+const LEGAL_DOCUMENT_STYLE = `
+Formato obrigatorio de resposta juridica:
+- Linguagem tecnica, clara e objetiva.
+- Use markdown com secoes numeradas e subtitulos.
+- Sempre que possivel, organize como minuta juridica com:
+  1. Relatorio dos Fatos
+  2. Questoes Juridicas
+  3. Fundamentacao
+  4. Estrategia Processual
+  5. Pedidos/Providencias
+- Destaque riscos, provas necessarias e proximos passos.
+- Evite respostas vagas e frases genéricas.
+`;
+
 function fallbackChatTitleFromText(text: string) {
   const clean = (text || "").replace(/\s+/g, " ").trim();
   if (!clean) {
@@ -655,13 +669,100 @@ interface AnalystPlan {
   requestedTools: string[];
 }
 
+interface WebSearchItem {
+  title: string;
+  url: string;
+  snippet: string;
+}
+
+function flattenDuckTopics(items: unknown[]): Array<Record<string, unknown>> {
+  const result: Array<Record<string, unknown>> = [];
+  for (const item of items) {
+    if (!item || typeof item !== "object") continue;
+    const typed = item as Record<string, unknown>;
+    if (Array.isArray(typed.Topics)) {
+      result.push(...flattenDuckTopics(typed.Topics));
+      continue;
+    }
+    result.push(typed);
+  }
+  return result;
+}
+
+async function webSearchDuckDuckGo(query: string, limit = 5) {
+  const endpoint = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&no_redirect=1`;
+  const response = await fetch(endpoint);
+
+  if (!response.ok) {
+    throw new Error(`DuckDuckGo search failed (${response.status})`);
+  }
+
+  const payload = (await response.json()) as {
+    RelatedTopics?: unknown[];
+    Results?: Array<Record<string, unknown>>;
+  };
+
+  const fromResults = Array.isArray(payload.Results) ? payload.Results : [];
+  const fromRelated = Array.isArray(payload.RelatedTopics)
+    ? flattenDuckTopics(payload.RelatedTopics)
+    : [];
+
+  const merged = [...fromResults, ...fromRelated]
+    .map((item) => {
+      const title = typeof item.Text === "string" ? item.Text : "";
+      const url = typeof item.FirstURL === "string" ? item.FirstURL : "";
+      if (!title || !url) {
+        return null;
+      }
+
+      return {
+        title,
+        url,
+        snippet: title,
+      } as WebSearchItem;
+    })
+    .filter((item): item is WebSearchItem => Boolean(item));
+
+  return merged.slice(0, Math.max(1, Math.min(8, limit)));
+}
+
+function webItemsToMarkdown(items: WebSearchItem[]) {
+  if (items.length === 0) {
+    return "Nenhuma fonte web encontrada na pesquisa atual.";
+  }
+
+  return items
+    .map((item, index) => `${index + 1}. [${item.title}](${item.url})\n   - ${item.snippet}`)
+    .join("\n");
+}
+
 async function buildAnalystPlan(message: string, history: AnalystChatMessage[]) {
   const historyText = history
     .slice(-8)
     .map((entry) => `${entry.role === "assistant" ? "Assistente" : "Usuario"}: ${entry.content}`)
     .join("\n");
 
-  const prompt = `Voce e um analista juridico em chat.\nRetorne JSON com os campos:\n- thinkingSummary (resumo curto de raciocinio, sem expor cadeia completa)\n- reply (resposta principal em markdown)\n- requestedTools (array com zero ou mais valores entre: create_complete_document, find_precedents, build_search_string)\n\nHistorico:\n${historyText || "(sem historico)"}\n\nMensagem do usuario:\n${message}`;
+  const prompt = `Voce e um analista juridico em chat para defensoria publica.
+${LEGAL_DOCUMENT_STYLE}
+
+Retorne JSON com os campos:
+- thinkingSummary (resumo curto e objetivo da linha de raciocinio, sem cadeia interna completa)
+- reply (resposta principal em markdown seguindo o formato juridico acima)
+- requestedTools (array com zero ou mais valores entre: create_complete_document, find_precedents, build_search_string, precedents_web_card, nullities_card, trend_analysis_card)
+
+Regras para requestedTools:
+- use create_complete_document quando o usuario pedir peticao, minuta, parecer ou documento completo;
+- use find_precedents quando houver pedido de jurisprudencia, precedentes ou reforco argumentativo;
+- use build_search_string quando o usuario pedir estrategia de pesquisa em tribunais.
+- use precedents_web_card quando for util buscar fontes publicas na web sobre precedentes.
+- use nullities_card quando houver risco de nulidade processual/material.
+- use trend_analysis_card quando o usuario pedir visao de tendencia jurisprudencial.
+
+Historico:
+${historyText || "(sem historico)"}
+
+Mensagem do usuario:
+${message}`;
 
   const raw = await callAiProvider(prompt, true);
   const parsed = parseJsonObjectFromModelText(raw);
@@ -680,7 +781,10 @@ async function buildAnalystPlan(message: string, history: AnalystChatMessage[]) 
         .filter((value) =>
           value === "create_complete_document" ||
           value === "find_precedents" ||
-          value === "build_search_string"
+          value === "build_search_string" ||
+          value === "precedents_web_card" ||
+          value === "nullities_card" ||
+          value === "trend_analysis_card"
         )
     : [];
 
@@ -712,7 +816,17 @@ async function executeAnalystTools(
   for (const tool of limitedTools) {
     if (tool === "create_complete_document") {
       const result = await callAiProvider(
-        `Crie um documento juridico completo em markdown com secoes (fatos, fundamentos, pedidos, estrategia de prova), usando este contexto:\n${context}\n\nMensagem atual: ${userMessage}`
+        `Voce esta executando a tool create_complete_document.
+${LEGAL_DOCUMENT_STYLE}
+
+Crie um documento juridico completo em markdown com base no contexto abaixo.
+Inclua secoes de fatos, fundamentos, estrategia processual, provas e pedidos.
+
+Contexto do chat:
+${context}
+
+Mensagem atual:
+${userMessage}`
       );
       outputs.push({ tool, content: result || "Sem conteudo retornado." });
       continue;
@@ -720,7 +834,12 @@ async function executeAnalystTools(
 
     if (tool === "find_precedents") {
       const result = await callAiProvider(
-        `Com base na mensagem, liste 3 precedentes possiveis (STJ/STF), em markdown, com numero, tribunal e tese: ${userMessage}`
+        `Voce esta executando a tool find_precedents.
+Liste 3 precedentes possiveis (STJ/STF) com formato juridico organizado em markdown.
+Para cada precedente inclua: numero/processo, tribunal, orgao julgador (se possivel), relator (se possivel), tese e aplicabilidade ao caso.
+
+Mensagem base:
+${userMessage}`
       );
       outputs.push({ tool, content: result || "Sem precedentes retornados." });
       continue;
@@ -728,9 +847,121 @@ async function executeAnalystTools(
 
     if (tool === "build_search_string") {
       const result = await callAiProvider(
-        `Gere string booleana de busca juridica com base na mensagem: ${userMessage}. Retorne apenas a string.`
+        `Voce esta executando a tool build_search_string.
+Gere estrategia de busca juridica para tribunais com:
+1) string booleana principal
+2) duas variacoes otimizadas
+3) lista curta de palavras-chave complementares
+
+Mensagem base:
+${userMessage}`
       );
       outputs.push({ tool, content: result || "Sem string retornada." });
+      continue;
+    }
+
+    if (tool === "precedents_web_card") {
+      let webItems: WebSearchItem[] = [];
+      try {
+        webItems = await webSearchDuckDuckGo(
+          `${userMessage} jurisprudencia precedente STF STJ site:jusbrasil.com OR site:stf.jus.br OR site:stj.jus.br`,
+          5
+        );
+      } catch {
+        webItems = [];
+      }
+
+      const synthesis = await callAiProvider(
+        `Com base nas fontes web e no contexto, monte um card em markdown chamado "Precedentes pesquisados na internet".
+Inclua: resumo, pontos de uso pratico e cautelas de confiabilidade das fontes.
+
+Contexto:
+${context}
+
+Mensagem atual:
+${userMessage}
+
+Fontes web:
+${webItemsToMarkdown(webItems)}`
+      );
+
+      outputs.push({
+        tool,
+        content:
+          `${synthesis || "Sem sintese retornada."}\n\n### Fontes web\n${webItemsToMarkdown(webItems)}`,
+      });
+      continue;
+    }
+
+    if (tool === "nullities_card") {
+      let webItems: WebSearchItem[] = [];
+      try {
+        webItems = await webSearchDuckDuckGo(
+          `${userMessage} nulidade processual penal civil jurisprudencia STF STJ`,
+          5
+        );
+      } catch {
+        webItems = [];
+      }
+
+      const synthesis = await callAiProvider(
+        `Monte um card de "Nulidades" em markdown com:
+1. Hipoteses de nulidade (absoluta/relativa)
+2. Fundamentos juridicos possiveis
+3. Provas necessarias
+4. Risco e estrategia de arguicao
+
+Contexto:
+${context}
+
+Mensagem atual:
+${userMessage}
+
+Fontes web:
+${webItemsToMarkdown(webItems)}`
+      );
+
+      outputs.push({
+        tool,
+        content:
+          `${synthesis || "Sem analise de nulidades retornada."}\n\n### Fontes web\n${webItemsToMarkdown(webItems)}`,
+      });
+      continue;
+    }
+
+    if (tool === "trend_analysis_card") {
+      let webItems: WebSearchItem[] = [];
+      try {
+        webItems = await webSearchDuckDuckGo(
+          `${userMessage} tendencia jurisprudencial STF STJ 2023 2024 2025`,
+          5
+        );
+      } catch {
+        webItems = [];
+      }
+
+      const synthesis = await callAiProvider(
+        `Monte um card de "Analise de Tendencia" em markdown com:
+1. Sinais de tendencia favoravel
+2. Sinais de tendencia desfavoravel
+3. Pontos de ruptura/virada jurisprudencial
+4. Recomendacao estrategica para o caso
+
+Contexto:
+${context}
+
+Mensagem atual:
+${userMessage}
+
+Fontes web:
+${webItemsToMarkdown(webItems)}`
+      );
+
+      outputs.push({
+        tool,
+        content:
+          `${synthesis || "Sem analise de tendencia retornada."}\n\n### Fontes web\n${webItemsToMarkdown(webItems)}`,
+      });
     }
   }
 
@@ -1274,15 +1505,18 @@ async function startServer() {
     }
 
     const prompt = `
-Você e um Assessor Juridico da Defensoria Publica.
-Analise o seguinte caso e retorne JSON com os campos:
-- diagnostico
-- estrategiaBusca
-- sugestaoAutomacao
-- minutaPeca
+  Voce e um Assessor Juridico da Defensoria Publica.
+  ${LEGAL_DOCUMENT_STYLE}
 
-Caso: ${description}
-`;
+  Analise o caso e retorne JSON com os campos:
+  - diagnostico (texto organizado por topicos)
+  - estrategiaBusca (plano de pesquisa jurisprudencial e probatoria)
+  - sugestaoAutomacao (tarefas automatizaveis no fluxo juridico)
+  - minutaPeca (minuta em markdown no modelo juridico)
+
+  Caso:
+  ${description}
+  `;
 
     try {
       pushBackendLog("info", "ai", "Solicitacao de analise de caso iniciada", {
@@ -1352,7 +1586,13 @@ Caso: ${description}
       return res.status(400).json({ error: "theme is required" });
     }
 
-    const prompt = `Gere uma string de busca booleana para STJ/TJ sobre: ${theme}. Retorne apenas a string.`;
+    const prompt = `Atue como pesquisador juridico. Gere resposta organizada em markdown com:
+  1. String booleana principal para STJ/TJ
+  2. Variacao 1 (mais restritiva)
+  3. Variacao 2 (mais abrangente)
+  4. Termos adicionais relevantes
+
+  Tema: ${theme}`;
 
     try {
       pushBackendLog("info", "ai", "Solicitacao de geracao de busca iniciada", {
@@ -1394,7 +1634,15 @@ Caso: ${description}
       return res.status(400).json({ error: "rulingText is required" });
     }
 
-    const prompt = `Analise este acordao e responda em markdown:\n1. Resumo dos argumentos vencedores.\n2. Se contraria decisoes recentes do STF.\n3. Se cabe overruling ou distinguishing.\n\nTexto: ${rulingText}`;
+    const prompt = `Analise este acordao em formato de documentacao juridica, com markdown estruturado:
+  1. Relatorio sintetico
+  2. Fundamentos determinantes do julgado
+  3. Compatibilidade com precedentes relevantes do STF/STJ
+  4. Hipoteses de overruling, distinguishing ou impugnacao
+  5. Riscos e proxima estrategia processual
+
+  Texto do acordao:
+  ${rulingText}`;
 
     try {
       pushBackendLog("info", "ai", "Solicitacao de analise de acordao iniciada", {
@@ -1436,7 +1684,16 @@ Caso: ${description}
       return res.status(400).json({ error: "description is required" });
     }
 
-    const prompt = `Com base nesta descricao, retorne em markdown 3 precedentes possiveis similares (STF/STJ), com numero processual, tribunal, relator e tese: ${description}`;
+    const prompt = `Com base nesta descricao, retorne em markdown 3 precedentes similares (STF/STJ), com formato juridico organizado.
+  Para cada item, inclua:
+  1. Numero/processo
+  2. Tribunal e orgao julgador
+  3. Relator (se disponivel)
+  4. Tese central
+  5. Aplicabilidade pratica ao caso descrito
+
+  Descricao:
+  ${description}`;
 
     try {
       pushBackendLog("info", "ai", "Solicitacao de busca de precedentes iniciada", {

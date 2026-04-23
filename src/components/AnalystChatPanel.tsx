@@ -25,6 +25,12 @@ interface AnalystChatRecord {
   messages: AnalystChatMessage[];
 }
 
+interface SideCardState {
+  precedentsWeb: string | null;
+  nullities: string | null;
+  trendAnalysis: string | null;
+}
+
 interface AnalystChatSummary {
   id: number;
   title: string;
@@ -47,6 +53,35 @@ export default function AnalystChatPanel({ userId }: { userId: string }) {
   const [loading, setLoading] = useState(false);
   const [loadingChats, setLoadingChats] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const sideCards = useMemo<SideCardState>(() => {
+    const base: SideCardState = {
+      precedentsWeb: null,
+      nullities: null,
+      trendAnalysis: null,
+    };
+
+    if (!activeChat) {
+      return base;
+    }
+
+    for (const msg of activeChat.messages) {
+      if (!Array.isArray(msg.toolOutputs)) continue;
+      for (const tool of msg.toolOutputs) {
+        if (tool.tool === 'precedents_web_card') {
+          base.precedentsWeb = tool.content;
+        }
+        if (tool.tool === 'nullities_card') {
+          base.nullities = tool.content;
+        }
+        if (tool.tool === 'trend_analysis_card') {
+          base.trendAnalysis = tool.content;
+        }
+      }
+    }
+
+    return base;
+  }, [activeChat]);
 
   const authHeaders = useMemo(
     () => ({ 'Content-Type': 'application/json', 'x-user-id': userId }),
@@ -200,7 +235,7 @@ export default function AnalystChatPanel({ userId }: { userId: string }) {
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 p-4">
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4">
+      <div className="grid grid-cols-1 xl:grid-cols-[1fr_320px_320px] gap-4">
         <div className="border border-slate-200 rounded-lg p-3 flex flex-col min-h-[520px]">
           <div className="mb-3">
             <h3 className="text-sm font-bold text-slate-800">Chat do Analista com Tools</h3>
@@ -272,6 +307,43 @@ export default function AnalystChatPanel({ userId }: { userId: string }) {
 
           {error && <p className="mt-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{error}</p>}
         </div>
+
+        <aside className="border border-slate-200 rounded-lg p-3 flex flex-col min-h-[520px]">
+          <h3 className="text-sm font-bold text-slate-800 mb-3">Cards ativados pela IA</h3>
+
+          <div className="flex-1 overflow-auto space-y-3">
+            {!sideCards.precedentsWeb && !sideCards.nullities && !sideCards.trendAnalysis && (
+              <p className="text-xs text-slate-500">A IA ainda nao ativou cards laterais para este chat.</p>
+            )}
+
+            {sideCards.precedentsWeb && (
+              <div className="border border-emerald-200 rounded-lg bg-emerald-50 p-3">
+                <p className="text-xs font-bold text-emerald-800 uppercase tracking-wide">Precedentes (Web)</p>
+                <div className="prose prose-sm max-w-none text-slate-700 mt-2">
+                  <ReactMarkdown>{sideCards.precedentsWeb}</ReactMarkdown>
+                </div>
+              </div>
+            )}
+
+            {sideCards.nullities && (
+              <div className="border border-amber-200 rounded-lg bg-amber-50 p-3">
+                <p className="text-xs font-bold text-amber-800 uppercase tracking-wide">Nulidades</p>
+                <div className="prose prose-sm max-w-none text-slate-700 mt-2">
+                  <ReactMarkdown>{sideCards.nullities}</ReactMarkdown>
+                </div>
+              </div>
+            )}
+
+            {sideCards.trendAnalysis && (
+              <div className="border border-indigo-200 rounded-lg bg-indigo-50 p-3">
+                <p className="text-xs font-bold text-indigo-800 uppercase tracking-wide">Analise de Tendencia</p>
+                <div className="prose prose-sm max-w-none text-slate-700 mt-2">
+                  <ReactMarkdown>{sideCards.trendAnalysis}</ReactMarkdown>
+                </div>
+              </div>
+            )}
+          </div>
+        </aside>
 
         <aside className="border border-slate-200 rounded-lg p-3 flex flex-col min-h-[520px]">
           <div className="flex items-center justify-between mb-3">
