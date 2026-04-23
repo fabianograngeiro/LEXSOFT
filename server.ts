@@ -58,6 +58,29 @@ interface RulingRecord {
   createdAt: string;
 }
 
+interface AnalystToolOutput {
+  tool: string;
+  content: string;
+}
+
+interface AnalystChatMessage {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+  thinking?: string;
+  toolOutputs?: AnalystToolOutput[];
+}
+
+interface AnalystChatRecord {
+  id: number;
+  userId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: AnalystChatMessage[];
+}
+
 interface AiConfig {
   provider: AiProvider;
   apiKey: string;
@@ -70,11 +93,14 @@ interface JsonDB {
   cases: CaseRecord[];
   searches: SearchRecord[];
   rulings: RulingRecord[];
+  analystChats: AnalystChatRecord[];
   aiConfig: AiConfig;
   counters: {
     caseId: number;
     searchId: number;
     rulingId: number;
+    chatId: number;
+    chatMessageId: number;
   };
 }
 
@@ -98,6 +124,7 @@ const initialDB: JsonDB = {
   cases: [],
   searches: [],
   rulings: [],
+  analystChats: [],
   aiConfig: {
     provider: "gemini",
     apiKey: "",
@@ -108,6 +135,8 @@ const initialDB: JsonDB = {
     caseId: 1,
     searchId: 1,
     rulingId: 1,
+    chatId: 1,
+    chatMessageId: 1,
   },
 };
 
@@ -321,6 +350,7 @@ function cleanupMockUsers() {
   db.cases = db.cases.filter((item) => !mockIds.has(item.userId));
   db.searches = db.searches.filter((item) => !mockIds.has(item.userId));
   db.rulings = db.rulings.filter((item) => !mockIds.has(item.userId));
+  db.analystChats = db.analystChats.filter((item) => !mockIds.has(item.userId));
   return true;
 }
 
@@ -388,6 +418,7 @@ async function loadDb() {
       cases: Array.isArray(parsed.cases) ? parsed.cases : [],
       searches: Array.isArray(parsed.searches) ? parsed.searches : [],
       rulings: Array.isArray(parsed.rulings) ? parsed.rulings : [],
+      analystChats: Array.isArray(parsed.analystChats) ? parsed.analystChats : [],
       aiConfig: {
         provider:
           parsed.aiConfig?.provider === "groq" ||
@@ -415,6 +446,8 @@ async function loadDb() {
         caseId: Number(parsed.counters?.caseId ?? 1),
         searchId: Number(parsed.counters?.searchId ?? 1),
         rulingId: Number(parsed.counters?.rulingId ?? 1),
+        chatId: Number(parsed.counters?.chatId ?? 1),
+        chatMessageId: Number(parsed.counters?.chatMessageId ?? 1),
       },
     };
 
@@ -438,6 +471,58 @@ async function loadDb() {
         passwordSalt: typed.passwordSalt || fallbackPassword.passwordSalt,
       };
     });
+
+    db.analystChats = db.analystChats
+      .filter((chat) => Boolean(chat && typeof chat === "object"))
+      .map((chat) => {
+        const typed = chat as Partial<AnalystChatRecord>;
+        return {
+          id: typeof typed.id === "number" ? typed.id : db.counters.chatId++,
+          userId: typeof typed.userId === "string" ? typed.userId : "",
+          title: typeof typed.title === "string" && typed.title.trim().length > 0 ? typed.title.trim() : "Novo chat de analise",
+          createdAt: typeof typed.createdAt === "string" ? typed.createdAt : nowIso(),
+          updatedAt: typeof typed.updatedAt === "string" ? typed.updatedAt : nowIso(),
+          messages: Array.isArray(typed.messages)
+            ? typed.messages
+                .filter((msg) => msg && typeof msg === "object")
+                .map((msg) => {
+                  const typedMsg = msg as Partial<AnalystChatMessage>;
+                  const role: "assistant" | "user" =
+                    typedMsg.role === "assistant" ? "assistant" : "user";
+                  return {
+                    id:
+                      typeof typedMsg.id === "number"
+                        ? typedMsg.id
+                        : db.counters.chatMessageId++,
+                    role,
+                    content: typeof typedMsg.content === "string" ? typedMsg.content : "",
+                    createdAt:
+                      typeof typedMsg.createdAt === "string" ? typedMsg.createdAt : nowIso(),
+                    thinking:
+                      typeof typedMsg.thinking === "string" ? typedMsg.thinking : undefined,
+                    toolOutputs: Array.isArray(typedMsg.toolOutputs)
+                      ? typedMsg.toolOutputs
+                          .filter((output) => output && typeof output === "object")
+                          .map((output) => {
+                            const typedOutput = output as Partial<AnalystToolOutput>;
+                            return {
+                              tool:
+                                typeof typedOutput.tool === "string"
+                                  ? typedOutput.tool
+                                  : "tool",
+                              content:
+                                typeof typedOutput.content === "string"
+                                  ? typedOutput.content
+                                  : "",
+                            };
+                          })
+                      : undefined,
+                  };
+                })
+            : [],
+        };
+      })
+      .filter((chat) => chat.userId.length > 0);
 
     const cleaned = cleanupMockUsers();
     const createdEnvSuperAdmin = ensureEnvSuperAdmin();
@@ -536,6 +621,134 @@ function unknownErrorMessage(error: unknown) {
     return error.message;
   }
   return "Erro desconhecido";
+}
+
+function fallbackChatTitleFromText(text: string) {
+  const clean = (text || "").replace(/\s+/g, " ").trim();
+  if (!clean) {
+    return "Novo chat de analise";
+  }
+
+  const noPunctuation = clean.replace(/[.,;:!?()\[\]{}"']/g, " ").trim();
+  const words = noPunctuation.split(/\s+/).filter(Boolean).slice(0, 7);
+  const title = words.join(" ").trim();
+  return title.length > 0 ? title : "Novo chat de analise";
+}
+
+async function maybeGenerateChatTitle(seedText: string) {
+  try {
+    const prompt = `Crie um titulo curto (maximo 7 palavras) para este chat juridico. Retorne apenas o titulo, sem aspas:\n\n${seedText}`;
+    const title = (await callAiProvider(prompt)).replace(/\s+/g, " ").trim();
+    if (title.length > 0) {
+      return title.slice(0, 80);
+    }
+  } catch {
+    // fallback handled below
+  }
+
+  return fallbackChatTitleFromText(seedText);
+}
+
+interface AnalystPlan {
+  thinkingSummary: string;
+  reply: string;
+  requestedTools: string[];
+}
+
+async function buildAnalystPlan(message: string, history: AnalystChatMessage[]) {
+  const historyText = history
+    .slice(-8)
+    .map((entry) => `${entry.role === "assistant" ? "Assistente" : "Usuario"}: ${entry.content}`)
+    .join("\n");
+
+  const prompt = `Voce e um analista juridico em chat.\nRetorne JSON com os campos:\n- thinkingSummary (resumo curto de raciocinio, sem expor cadeia completa)\n- reply (resposta principal em markdown)\n- requestedTools (array com zero ou mais valores entre: create_complete_document, find_precedents, build_search_string)\n\nHistorico:\n${historyText || "(sem historico)"}\n\nMensagem do usuario:\n${message}`;
+
+  const raw = await callAiProvider(prompt, true);
+  const parsed = parseJsonObjectFromModelText(raw);
+
+  if (!parsed) {
+    return {
+      thinkingSummary: "Sem plano estruturado retornado pela IA.",
+      reply: raw || "Nao foi possivel gerar resposta estruturada.",
+      requestedTools: [],
+    } as AnalystPlan;
+  }
+
+  const requested = Array.isArray(parsed.requestedTools)
+    ? parsed.requestedTools
+        .map((value) => String(value))
+        .filter((value) =>
+          value === "create_complete_document" ||
+          value === "find_precedents" ||
+          value === "build_search_string"
+        )
+    : [];
+
+  return {
+    thinkingSummary:
+      typeof parsed.thinkingSummary === "string"
+        ? parsed.thinkingSummary
+        : "Resumo de pensamento indisponivel.",
+    reply:
+      typeof parsed.reply === "string"
+        ? parsed.reply
+        : "Nao foi possivel gerar resposta principal.",
+    requestedTools: requested,
+  };
+}
+
+async function executeAnalystTools(
+  tools: string[],
+  userMessage: string,
+  history: AnalystChatMessage[]
+) {
+  const outputs: AnalystToolOutput[] = [];
+  const limitedTools = tools.slice(0, 3);
+  const context = history
+    .slice(-6)
+    .map((entry) => `${entry.role}: ${entry.content}`)
+    .join("\n");
+
+  for (const tool of limitedTools) {
+    if (tool === "create_complete_document") {
+      const result = await callAiProvider(
+        `Crie um documento juridico completo em markdown com secoes (fatos, fundamentos, pedidos, estrategia de prova), usando este contexto:\n${context}\n\nMensagem atual: ${userMessage}`
+      );
+      outputs.push({ tool, content: result || "Sem conteudo retornado." });
+      continue;
+    }
+
+    if (tool === "find_precedents") {
+      const result = await callAiProvider(
+        `Com base na mensagem, liste 3 precedentes possiveis (STJ/STF), em markdown, com numero, tribunal e tese: ${userMessage}`
+      );
+      outputs.push({ tool, content: result || "Sem precedentes retornados." });
+      continue;
+    }
+
+    if (tool === "build_search_string") {
+      const result = await callAiProvider(
+        `Gere string booleana de busca juridica com base na mensagem: ${userMessage}. Retorne apenas a string.`
+      );
+      outputs.push({ tool, content: result || "Sem string retornada." });
+    }
+  }
+
+  return outputs;
+}
+
+async function buildAnalystAssistantMessage(
+  userMessage: string,
+  history: AnalystChatMessage[]
+) {
+  const plan = await buildAnalystPlan(userMessage, history);
+  const toolOutputs = await executeAnalystTools(plan.requestedTools, userMessage, history);
+
+  return {
+    content: plan.reply,
+    thinking: plan.thinkingSummary,
+    toolOutputs,
+  };
 }
 
 function parseJsonObjectFromModelText(text: string) {
@@ -963,6 +1176,7 @@ async function startServer() {
     db.cases = db.cases.filter((item) => item.userId !== id);
     db.searches = db.searches.filter((item) => item.userId !== id);
     db.rulings = db.rulings.filter((item) => item.userId !== id);
+    db.analystChats = db.analystChats.filter((item) => item.userId !== id);
 
     await persistDb();
     return res.status(204).send();
@@ -1251,6 +1465,227 @@ Caso: ${description}
         }
       );
     }
+  });
+
+  app.get("/api/analyst-chats", async (req, res) => {
+    const actor = requireActiveUser(req, res);
+    if (!actor) {
+      return;
+    }
+
+    const chats = db.analystChats
+      .filter((chat) => chat.userId === actor.id)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .map((chat) => {
+        const last = chat.messages[chat.messages.length - 1];
+        return {
+          id: chat.id,
+          title: chat.title,
+          createdAt: chat.createdAt,
+          updatedAt: chat.updatedAt,
+          lastMessagePreview: last?.content?.slice(0, 160) || "",
+          messagesCount: chat.messages.length,
+        };
+      });
+
+    return res.json(chats);
+  });
+
+  app.get("/api/analyst-chats/:id", async (req, res) => {
+    const actor = requireActiveUser(req, res);
+    if (!actor) {
+      return;
+    }
+
+    const id = parseNumericId(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: "Invalid chat id" });
+    }
+
+    const chat = db.analystChats.find((entry) => entry.id === id && entry.userId === actor.id);
+    if (!chat) {
+      return res.status(404).json({ error: "Chat nao encontrado" });
+    }
+
+    return res.json(chat);
+  });
+
+  app.post("/api/analyst-chats", async (req, res) => {
+    const actor = requireActiveUser(req, res);
+    if (!actor) {
+      return;
+    }
+
+    const { message } = req.body as { message?: string };
+    if (!message || !message.trim()) {
+      return res.status(400).json({ error: "message is required" });
+    }
+
+    const userMessageText = message.trim();
+    const timestamp = nowIso();
+    const chat: AnalystChatRecord = {
+      id: db.counters.chatId++,
+      userId: actor.id,
+      title: fallbackChatTitleFromText(userMessageText),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      messages: [
+        {
+          id: db.counters.chatMessageId++,
+          role: "user",
+          content: userMessageText,
+          createdAt: timestamp,
+        },
+      ],
+    };
+
+    db.analystChats.push(chat);
+
+    try {
+      const generatedTitle = await maybeGenerateChatTitle(userMessageText);
+      chat.title = generatedTitle || chat.title;
+
+      const assistant = await buildAnalystAssistantMessage(userMessageText, chat.messages);
+      chat.messages.push({
+        id: db.counters.chatMessageId++,
+        role: "assistant",
+        content: assistant.content,
+        thinking: assistant.thinking,
+        toolOutputs: assistant.toolOutputs,
+        createdAt: nowIso(),
+      });
+      chat.updatedAt = nowIso();
+
+      pushBackendLog("info", "ai", "Chat de analista criado com resposta da IA", {
+        route: "/api/analyst-chats",
+        userId: actor.id,
+        chatId: chat.id,
+      });
+    } catch (error) {
+      pushBackendLog("error", "ai", "Falha ao gerar resposta inicial do chat de analista", {
+        route: "/api/analyst-chats",
+        userId: actor.id,
+        chatId: chat.id,
+        aiMessage: unknownErrorMessage(error),
+      });
+
+      chat.messages.push({
+        id: db.counters.chatMessageId++,
+        role: "assistant",
+        content:
+          "Nao foi possivel gerar resposta da IA neste momento. Verifique a configuracao global e tente novamente.",
+        thinking: "Falha ao executar fluxo de resposta.",
+        toolOutputs: [
+          {
+            tool: "error",
+            content: unknownErrorMessage(error),
+          },
+        ],
+        createdAt: nowIso(),
+      });
+      chat.updatedAt = nowIso();
+    }
+
+    await persistDb();
+    return res.status(201).json(chat);
+  });
+
+  app.post("/api/analyst-chats/:id/messages", async (req, res) => {
+    const actor = requireActiveUser(req, res);
+    if (!actor) {
+      return;
+    }
+
+    const id = parseNumericId(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: "Invalid chat id" });
+    }
+
+    const { message } = req.body as { message?: string };
+    if (!message || !message.trim()) {
+      return res.status(400).json({ error: "message is required" });
+    }
+
+    const chat = db.analystChats.find((entry) => entry.id === id && entry.userId === actor.id);
+    if (!chat) {
+      return res.status(404).json({ error: "Chat nao encontrado" });
+    }
+
+    const userMessageText = message.trim();
+    chat.messages.push({
+      id: db.counters.chatMessageId++,
+      role: "user",
+      content: userMessageText,
+      createdAt: nowIso(),
+    });
+
+    try {
+      const assistant = await buildAnalystAssistantMessage(userMessageText, chat.messages);
+      chat.messages.push({
+        id: db.counters.chatMessageId++,
+        role: "assistant",
+        content: assistant.content,
+        thinking: assistant.thinking,
+        toolOutputs: assistant.toolOutputs,
+        createdAt: nowIso(),
+      });
+
+      pushBackendLog("info", "ai", "Mensagem adicional processada no chat de analista", {
+        route: "/api/analyst-chats/:id/messages",
+        userId: actor.id,
+        chatId: chat.id,
+      });
+    } catch (error) {
+      pushBackendLog("error", "ai", "Falha ao processar mensagem adicional no chat de analista", {
+        route: "/api/analyst-chats/:id/messages",
+        userId: actor.id,
+        chatId: chat.id,
+        aiMessage: unknownErrorMessage(error),
+      });
+
+      chat.messages.push({
+        id: db.counters.chatMessageId++,
+        role: "assistant",
+        content:
+          "Nao consegui processar sua mensagem agora. Ajuste o contexto ou tente novamente em instantes.",
+        thinking: "Falha no fluxo de resposta incremental.",
+        toolOutputs: [
+          {
+            tool: "error",
+            content: unknownErrorMessage(error),
+          },
+        ],
+        createdAt: nowIso(),
+      });
+    }
+
+    chat.updatedAt = nowIso();
+    await persistDb();
+    return res.json(chat);
+  });
+
+  app.delete("/api/analyst-chats/:id", async (req, res) => {
+    const actor = requireActiveUser(req, res);
+    if (!actor) {
+      return;
+    }
+
+    const id = parseNumericId(req.params.id);
+    if (!id) {
+      return res.status(400).json({ error: "Invalid chat id" });
+    }
+
+    const index = db.analystChats.findIndex(
+      (entry) => entry.id === id && entry.userId === actor.id
+    );
+
+    if (index < 0) {
+      return res.status(404).json({ error: "Chat nao encontrado" });
+    }
+
+    db.analystChats.splice(index, 1);
+    await persistDb();
+    return res.status(204).send();
   });
 
   app.get("/api/superadmin/reset-challenge", async (req, res) => {

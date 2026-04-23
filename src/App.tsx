@@ -15,7 +15,8 @@ import {
   Settings,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
-import { analyzeCase, analyzeRuling, CaseAnalysis, findSimilarCases, generateSearchString } from './lib/ai';
+import { analyzeRuling, generateSearchString } from './lib/ai';
+import AnalystChatPanel from './components/AnalystChatPanel';
 import { cn } from './lib/utils';
 import { AuthProvider, useAuth, UserProfile } from './contexts/AuthContext';
 
@@ -294,9 +295,6 @@ function RegularUserDashboard({ user, onLogout }: { user: UserProfile; onLogout:
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
 
-  const [caseDescription, setCaseDescription] = useState('');
-  const [caseResult, setCaseResult] = useState<CaseAnalysis | null>(null);
-  const [precedents, setPrecedents] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [searchResult, setSearchResult] = useState('');
   const [rulingText, setRulingText] = useState('');
@@ -327,41 +325,6 @@ function RegularUserDashboard({ user, onLogout }: { user: UserProfile; onLogout:
     navigator.clipboard.writeText(text);
     setCopied(key);
     setTimeout(() => setCopied(null), 1500);
-  };
-
-  const handleAnalyzeCase = async () => {
-    if (!caseDescription) return;
-    setLoading(true);
-    setAiError(null);
-    try {
-      const result = await analyzeCase(caseDescription);
-      setCaseResult(result);
-      await fetch('/api/cases', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId: user.id, description: caseDescription, ...result }),
-      });
-      await fetchHistory();
-    } catch (err) {
-      setAiError(err instanceof Error ? err.message : 'Falha ao analisar caso.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleFindSimilarCases = async () => {
-    if (!caseDescription) return;
-    setLoading(true);
-    setAiError(null);
-
-    try {
-      const result = await findSimilarCases(caseDescription);
-      setPrecedents(result);
-    } catch (err) {
-      setAiError(err instanceof Error ? err.message : 'Falha ao buscar precedentes.');
-    } finally {
-      setLoading(false);
-    }
   };
 
   const handleGenerateSearch = async () => {
@@ -438,21 +401,7 @@ function RegularUserDashboard({ user, onLogout }: { user: UserProfile; onLogout:
         )}
 
         {activeTab === 'analyst' && (
-          <div className="bg-white rounded-xl border border-slate-200 p-5 space-y-4">
-            <textarea value={caseDescription} onChange={(e) => setCaseDescription(e.target.value)} className="w-full h-48 p-4 border border-slate-200 rounded-xl text-sm" placeholder="Descreva o caso para análise." />
-            <div className="flex gap-2">
-              <button onClick={handleAnalyzeCase} disabled={loading || !caseDescription} className="bg-slate-900 text-white px-4 py-2 rounded-lg text-sm font-bold">{loading ? 'Processando...' : 'Analisar Caso'}</button>
-              <button onClick={handleFindSimilarCases} disabled={loading || !caseDescription} className="bg-emerald-600 text-white px-4 py-2 rounded-lg text-sm font-bold">Buscar Precedentes</button>
-            </div>
-            {caseResult && (
-              <div className="space-y-3">
-                <ResultPanel title="Diagnóstico" content={caseResult.diagnostico} copied={copied === 'diag'} onCopy={() => handleCopy(caseResult.diagnostico, 'diag')} />
-                <ResultPanel title="Estratégia de Busca" content={caseResult.estrategiaBusca} copied={copied === 'estrat'} onCopy={() => handleCopy(caseResult.estrategiaBusca, 'estrat')} />
-                <div className="prose prose-sm max-w-none"><ReactMarkdown>{caseResult.minutaPeca}</ReactMarkdown></div>
-              </div>
-            )}
-            {precedents && <div className="prose prose-sm max-w-none border-t pt-3"><ReactMarkdown>{precedents}</ReactMarkdown></div>}
-          </div>
+          <AnalystChatPanel userId={user.id} />
         )}
 
         {activeTab === 'search' && (
